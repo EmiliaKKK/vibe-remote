@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -47,6 +48,40 @@ class AgentMessage:
     message_type: str = "assistant"
     parse_mode: str = "markdown"
     metadata: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ResultMetadata:
+    """Optional metadata for result status bar display."""
+
+    model: Optional[str] = None
+    working_dir: Optional[str] = None
+    git_branch: Optional[str] = None
+    git_dirty: Optional[bool] = None
+    total_cost_usd: Optional[float] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    agent_name: Optional[str] = None
+
+
+def detect_git_info(working_path: str) -> tuple:
+    """Detect git branch and dirty status. Returns (branch, is_dirty) or (None, None)."""
+    try:
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=working_path,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode().strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=working_path,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode().strip()
+        return branch, bool(status)
+    except Exception:
+        return None, None
 
 
 class BaseAgent(ABC):
@@ -102,12 +137,13 @@ class BaseAgent(ABC):
         parse_mode: str = "markdown",
         suffix: Optional[str] = None,
         request: Optional[AgentRequest] = None,
+        metadata: Optional[ResultMetadata] = None,
     ) -> None:
         show_duration = getattr(self.config, "show_duration", True)
         if duration_ms is None:
             duration_ms = self._calculate_duration_ms(started_at)
 
-        # When show_duration is disabled, skip the entire result line
+        # When show_duration is disabled, skip the status bar
         # unless there is actual result_text or suffix to deliver.
         if not show_duration:
             parts = []
@@ -124,6 +160,7 @@ class BaseAgent(ABC):
                 duration_ms,
                 result_text,
                 show_duration=True,
+                metadata=metadata,
             )
             if suffix:
                 formatted = f"{formatted}\n{suffix}"

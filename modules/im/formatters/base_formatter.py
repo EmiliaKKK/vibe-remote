@@ -331,32 +331,52 @@ class BaseMarkdownFormatter(ABC):
         duration_ms: int,
         result: Optional[str] = None,
         show_duration: bool = True,
+        metadata=None,
     ) -> str:
-        """Format result message.
+        """Format result message with optional status bar.
 
-        Format: ⏱️ Success: 2m 24s  (when show_duration=True)
-                ⏱️ Success           (when show_duration=False)
+        Layout: result text first, then status bar at the bottom.
+        Status bar segments are independently optional.
         """
-        subtype_display = subtype.capitalize() if subtype else "Done"
+        import os
+
+        segments: List[str] = []
+
+        if metadata:
+            if metadata.model:
+                segments.append(f"🤖 {metadata.model}")
+            if metadata.working_dir:
+                dir_name = os.path.basename(metadata.working_dir.rstrip("/"))
+                if dir_name:
+                    segments.append(f"📁 {dir_name}")
+            if metadata.git_branch:
+                dirty = " ●" if metadata.git_dirty else ""
+                segments.append(f"🌿 {metadata.git_branch}{dirty}")
+            total_tokens = (metadata.input_tokens or 0) + (metadata.output_tokens or 0)
+            if total_tokens > 0:
+                token_str = f"{total_tokens / 1000:.1f}k" if total_tokens >= 1000 else str(total_tokens)
+                segments.append(f"⚡️ {token_str} tokens")
+            if metadata.total_cost_usd is not None:
+                segments.append(f"💰 ${metadata.total_cost_usd:.2f}")
 
         if show_duration and duration_ms > 0:
             total_seconds = duration_ms / 1000
             minutes = int(total_seconds // 60)
             seconds = int(total_seconds % 60)
+            duration_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+            segments.append(f"⏱️ {duration_str}")
 
-            if minutes > 0:
-                duration_str = f"{minutes}m {seconds}s"
-            else:
-                duration_str = f"{seconds}s"
-
-            result_text = f"⏱️ {subtype_display}: {duration_str}"
-        else:
-            result_text = f"⏱️ {subtype_display}"
-
+        parts: List[str] = []
         if result:
-            result_text += f"\n\n{result}"
+            parts.append(result)
+        if segments:
+            parts.append(" | ".join(segments))
 
-        return result_text
+        if not parts:
+            subtype_display = subtype.capitalize() if subtype else "Done"
+            return f"⏱️ {subtype_display}"
+
+        return "\n\n".join(parts)
 
     def format_tool_result(self, is_error: bool, content: Optional[str] = None) -> str:
         """Format tool result block"""

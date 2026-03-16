@@ -5,7 +5,7 @@ from typing import Callable, Optional
 
 from claude_agent_sdk import TextBlock, ToolUseBlock
 
-from modules.agents.base import AgentRequest, BaseAgent
+from modules.agents.base import AgentRequest, BaseAgent, ResultMetadata, detect_git_info
 
 # NOTE: AskUserQuestion support is disabled because Claude Code SDK cannot
 # respond to it programmatically. See: https://github.com/anthropics/claude-code/issues/10168
@@ -34,6 +34,7 @@ class ClaudeAgent(BaseAgent):
         self.claude_client = controller.claude_client
         self._last_assistant_text: dict[str, str] = {}
         self._pending_assistant_message: dict[str, str] = {}
+        self._session_models: dict[str, str] = {}
         # Store reaction info per session as a queue (FIFO) for cleanup after result
         # Each entry is (reaction_message_id, emoji)
         self._pending_reactions: dict[str, list[tuple[str, str]]] = {}
@@ -63,6 +64,12 @@ class ClaudeAgent(BaseAgent):
                 subagent_model=request.subagent_model,
                 subagent_reasoning_effort=request.subagent_reasoning_effort,
             )
+
+            # Stash effective model for status bar at result time
+            if request.subagent_model:
+                self._session_models[request.composite_session_id] = request.subagent_model
+            elif request.composite_session_id not in self._session_models:
+                self._session_models[request.composite_session_id] = self._resolve_model(context)
 
             # Queue reaction BEFORE sending query to avoid race condition where
             # a fast result arrives before the reaction is queued
@@ -132,6 +139,7 @@ class ClaudeAgent(BaseAgent):
                 logger.warning(f"Error closing Claude session {session_key}: {e}")
             finally:
                 self.claude_sessions.pop(session_key, None)
+                self._session_models.pop(session_key, None)
                 # Pending reactions are cleaned up by the receiver's
                 # CancelledError / Exception handlers when it terminates.
 
@@ -307,12 +315,29 @@ class ClaudeAgent(BaseAgent):
                         # contains the same text as the last AssistantMessage,
                         # so sending both would duplicate the content.
 
+                        # Build status bar metadata from ResultMessage
+                        usage = getattr(message, "usage", None) or {}
+                        branch, dirty = detect_git_info(working_path)
+                        metadata = ResultMetadata(
+                            model=self._session_models.get(composite_key),
+                            working_dir=working_path,
+                            git_branch=branch,
+                            git_dirty=dirty,
+                            total_cost_usd=getattr(message, "total_cost_usd", None),
+                            input_tokens=(usage.get("input_tokens", 0) or 0)
+                                + (usage.get("cache_read_input_tokens", 0) or 0)
+                                + (usage.get("cache_creation_input_tokens", 0) or 0),
+                            output_tokens=usage.get("output_tokens", 0) or 0,
+                            agent_name=self.name,
+                        )
+
                         await self.emit_result_message(
                             context,
                             result_text,
                             subtype=getattr(message, "subtype", "") or "",
                             duration_ms=getattr(message, "duration_ms", 0),
                             parse_mode="markdown",
+                            metadata=metadata,
                         )
 
                         # Remove ack reaction after result is sent
@@ -418,6 +443,17 @@ class ClaudeAgent(BaseAgent):
                     await self.im_client.remove_reaction(context, message_id, emoji)
                 except Exception as err:
                     logger.debug(f"Failed to remove reaction ack: {err}")
+
+    def _resolve_model(self, context: MessageContext) -> Optional[str]:
+        """Resolve the effective model name from routing config or global default."""
+        settings_key = self.controller._get_settings_key(context)
+        channel_settings = self.settings_manager.get_channel_settings(settings_key)
+        routing = channel_settings.routing if channel_settings else None
+        model = routing.claude_model if routing else None
+        if not model:
+            claude_cfg = getattr(self.config, "claude", None)
+            model = claude_cfg.default_model if claude_cfg else None
+        return model
 
     def get_relative_path(self, abs_path: str, context: Optional[MessageContext] = None) -> str:
         """Convert absolute path to relative path from working directory."""
