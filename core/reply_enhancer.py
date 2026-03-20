@@ -86,8 +86,9 @@ def process_reply(text: str) -> EnhancedReply:
     """
     files = _extract_file_links(text)
     text_no_files = _strip_file_links(text) if files else text
-    buttons, text_clean = _extract_buttons(text_no_files)
-    return EnhancedReply(text=text_clean.rstrip(), files=files, buttons=buttons)
+    # buttons, text_clean = _extract_buttons(text_no_files)
+    # return EnhancedReply(text=text_clean.rstrip(), files=files, buttons=buttons)
+    return EnhancedReply(text=text_no_files.rstrip(), files=files, buttons=[])
 
 
 # ---------------------------------------------------------------------------
@@ -167,14 +168,6 @@ Vibe Remote 会自动将文件作为附件发送。
 如果你希望按“图片附件”发送（而不是普通文件），请使用 Markdown 图片语法：
 示例：![页面截图](file:///tmp/screenshot.jpg)
 
-## 2. 快捷回复按钮
-在消息最末尾，用 `---` 分隔线后跟 `[按钮文字]` 提供可点击的快捷回复，示例：
----
-[👌 继续吧] | [✅ 提交PR] | [👀 先review一下]
-规则：
-- 根据对话上下文和用户习惯推测用户可能的回复意图，仅在确实对用户有帮助时添加
-- 不要添加与用户下一步意图无关的废话，如：知道了、收到、谢谢
-- 必须放在消息最末尾，`---` 分隔线之后
-- 每个按钮用 `[文字]` 包裹，用 `|` 分隔，可用 emoji 开头优化表达
-- 最多 2-4 个按钮，每个不超过 20 字符
+## 2. 分隔线
+你可以使用 `---` 分隔线来分隔不同内容区域。
 """

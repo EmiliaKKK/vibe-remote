@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Callable, Optional
 
 from claude_agent_sdk import TextBlock, ToolUseBlock
@@ -224,7 +226,7 @@ class ClaudeAgent(BaseAgent):
                                 #         continue
 
                                 toolcalls.append(
-                                    formatter.format_toolcall(
+                                    formatter.format_tool_use(
                                         block.name,
                                         block.input,
                                         get_relative_path=lambda path: self.get_relative_path(path, context),
@@ -316,7 +318,13 @@ class ClaudeAgent(BaseAgent):
                         # so sending both would duplicate the content.
 
                         # Build status bar metadata from ResultMessage
-                        usage = getattr(message, "usage", None) or {}
+                        # Try reading usage from transcript file for accurate
+                        # main-agent context (excludes sub-agent tokens).
+                        usage = self._read_transcript_usage(
+                            getattr(message, "session_id", None), working_path
+                        )
+                        if not usage:
+                            usage = getattr(message, "usage", None) or {}
                         branch, dirty = detect_git_info(working_path)
                         metadata = ResultMetadata(
                             model=self._session_models.get(composite_key),
@@ -496,6 +504,43 @@ class ClaudeAgent(BaseAgent):
             if session_id:
                 self.session_handler.capture_session_id(base_session_id, session_id, settings_key)
                 return session_id
+        return None
+
+    @staticmethod
+    def _read_transcript_usage(session_id: Optional[str], working_path: str) -> Optional[dict]:
+        """Read the last assistant message's usage from the transcript file.
+
+        Returns the usage dict of the main agent's last step, which accurately
+        reflects the current context window size (excluding sub-agent tokens).
+        """
+        if not session_id:
+            return None
+        try:
+            # Transcript path: ~/.claude/projects/{cwd-with-dashes}/{session_id}.jsonl
+            sanitized = working_path.replace("/", "-")
+            if sanitized.startswith("-"):
+                sanitized = sanitized[1:]
+            transcript_path = Path.home() / ".claude" / "projects" / f"-{sanitized}" / f"{session_id}.jsonl"
+            if not transcript_path.exists():
+                return None
+            # Read last lines and find the last assistant message with usage
+            with open(transcript_path, "rb") as f:
+                # Seek from end to read last ~64KB (enough for recent messages)
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 65536))
+                tail = f.read().decode("utf-8", errors="replace")
+            for line in reversed(tail.strip().splitlines()):
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "assistant":
+                    usage = entry.get("message", {}).get("usage")
+                    if usage:
+                        return usage
+        except Exception as e:
+            logger.debug(f"Failed to read transcript usage: {e}")
         return None
 
     def _extract_text_blocks(self, message) -> str:
